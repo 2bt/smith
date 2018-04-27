@@ -29,13 +29,16 @@ class App:
 		"heavy",
 	}
 
+
 	def miner_log(self, msg):
 		for line in msg.split("\n"):
 			print "\033[35m[miner]\033[m" + line
 
+
 	def log(self, msg):
 		for line in msg.split("\n"):
 			print "\033[33m[proxy]\033[m" + line
+
 
 	def run(self, algo=None):
 		self.loop = pyuv.Loop.default_loop()
@@ -60,11 +63,11 @@ class App:
 		# enter main loop
 		self.loop.run()
 
+
 	def connect_to_pool(self):
 		self.log("connecting to pool")
 		self.pool = pyuv.TCP(self.loop)
 		self.pool.connect((pool_addr, pool_port), self.on_pool_connected)
-		self.try_reconnect = False
 
 
 	def on_pool_connected(self, tcp, error):
@@ -91,11 +94,10 @@ class App:
 	def start_miner_process(self):
 		assert self.proc == None
 		if self.algo in self.SUPPORTED_ALGOS:
-			self.log("starting miner process")
+			self.log("start miner process")
 			cwd = os.path.join(os.getcwd(), "miners", self.algo)
 			self.stdin  = pyuv.Pipe(self.loop, True)
 			self.stdout = pyuv.Pipe(self.loop, True)
-
 
 			self.proc = pyuv.Process.spawn(
 				self.loop,
@@ -118,15 +120,25 @@ class App:
 			self.listener.listen(self.on_miner_connected, 1)
 
 
-	def stop_miner_process(self):
+	def handle_action(self):
+		action = self.action
+		self.action = None
+		if action == "exit":
+			self.loop.stop()
+		elif action == "reconnect":
+			self.connect_to_pool()
+
+
+	def stop_miner_process(self, action=None):
+		self.action = action
 		if self.proc:
 			if self.proc_state == "running":
 				self.log("stopping miner process")
 				self.proc.kill(2)
 				self.proc_state = "stopping"
 		else:
-			if self.try_reconnect:
-				self.connect_to_pool()
+			self.handle_action()
+
 
 	def on_miner_process_exited(self, proc, status, sig):
 		self.log("miner process stopped")
@@ -135,8 +147,7 @@ class App:
 		self.stdout.close()
 		self.proc = None
 		self.proc_state = "off"
-		if self.try_reconnect:
-			self.connect_to_pool()
+		self.handle_action()
 
 
 	def on_miner_connected(self, tcp, error):
@@ -147,13 +158,21 @@ class App:
 		self.listener = None
 		self.miner.start_read(self.on_miner_read)
 
+
 	def on_miner_read(self, tcp, data, error):
 		if not data:
-			self.log("miner disconnected")
 			self.miner.close()
 			self.miner = None
-			self.try_reconnect = True
-			self.stop_miner_process()
+			if self.proc_state == "stopping":
+				self.log("miner disconnected")
+			elif self.proc_state == "running":
+				self.log("miner disconnected unexpectedly")
+				self.log("disconnect to pool")
+				self.pool.close()
+				self.pool = None
+				self.stop_miner_process("reconnect")
+			else:
+				assert False
 			return
 
 		self.log("miner says:")
@@ -166,6 +185,7 @@ class App:
 		# pass data on to pool
 		if self.pool:
 			self.pool.write(data)
+
 
 	def on_pool_read(self, tcp, data, error):
 		if not data:
@@ -191,21 +211,18 @@ class App:
 			self.algo = algo
 			if self.algo not in self.SUPPORTED_ALGOS:
 				self.log("algorithm is not supported")
+				self.stop_miner_process()
 			else:
 				self.log("algorithm is supported")
 				if self.pool:
 					self.log("disconnect to pool")
 					self.pool.close()
 					self.pool = None
-				self.try_reconnect = True
-			self.stop_miner_process()
+				self.stop_miner_process("reconnect")
 			return
 
 		if self.miner: self.miner.write(data)
 
-	def stop(self):
-		if self.proc:
-			self.proc.kill(2)
 
 	def on_miner_process_output(self, pipe, data, error):
 		if not data: return
@@ -220,9 +237,8 @@ class App:
 
 
 	def on_signal(self, handle, signum):
-		self.log("terminate")
+		self.log("exiting")
 		self.sig.close()
-		self.loop.stop()
 
 		if self.pool:
 			self.pool.close()
@@ -233,6 +249,8 @@ class App:
 		if self.listener:
 			self.listener.close()
 			self.listener = None
+
+		self.stop_miner_process("exit")
 
 
 if __name__ == "__main__":
