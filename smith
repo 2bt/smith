@@ -1,16 +1,32 @@
-#!/usr/bin/python
-import pyuv
-import socket
+#!/usr/bin/python3.6
+import asyncio
 import signal
-import json
+import html
 import sys
+import json
 import os
 
+from PyQt5.QtWidgets import *
+from PyQt5.QtGui import QFont
+from quamash import QEventLoop
 
-#pool_addr = socket.gethostbyname("my.host.name")
+#print("Platform:", sys.platform)
+
+
+# TODO: make config nice
 pool_addr  = "78.46.85.142"
 pool_port  = 35349
 local_port = 55555
+config = {
+	"font-size": 10,
+	"login": "rig2",
+	"pass": "x",
+	"log-file": "log.txt",
+}
+supported_algos = {
+	"monero_v7",
+	"heavy",
+}
 
 
 def to_json(o):
@@ -23,235 +39,276 @@ def from_json(s):
 	return json.loads(s)
 
 
+
+class LogWin(QPlainTextEdit):
+	def __init__(self):
+		QPlainTextEdit.__init__(self)
+		self.setReadOnly(True)
+		font = QFont("Monospace", config["font-size"])
+		self.setFont(font)
+		self.setLineWrapMode(0)
+		self.setMaximumBlockCount(1000)
+		self.file = open(config["log-file"], "w")
+
+	def miner_log(self, text):
+		for line in text.rstrip().split("\n"):
+			self.appendHtml("<pre><b><font color='#800'>miner: </font></b>" + html.escape(line) + "</pre>")
+			#self.appendHtml("<pre style='background-color:#ccc'>" + html.escape(line) + "</pre>")
+			self.file.write("miner: " + line + "\n")
+			print("\033[35mminer:\033[m", line)
+		self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
+
+	def proxy_log(self, text):
+		for line in text.rstrip().split("\n"):
+			self.appendHtml("<pre><b><font color='#008'>proxy: </font></b>" + html.escape(line) + "</pre>")
+			#self.appendHtml("<pre>" + html.escape(line) + "</pre>")
+			self.file.write("proxy: " + line + "\n")
+			print("\033[33mproxy:\033[m", line)
+		self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
+
+
+class MainWin(QWidget):
+	def __init__(self, app):
+		QWidget.__init__(self)
+		self.app = app
+		self.log_win = LogWin()
+		hbox = QHBoxLayout()
+		vbox = QVBoxLayout()
+
+		# buttons
+		for label, data in [
+			("hashrate", "h"),
+			("results", "r"),
+			("connection", "c")
+		]:
+			b = QPushButton(label)
+			def on_clicked_factory(label, data):
+				def on_clicked():
+					if self.app.proc:
+						self.log_win.proxy_log("send %r to miner process." % data)
+						self.app.proc.stdin.write(data.encode())
+					else:
+						self.log_win.proxy_log("error: miner process not running.")
+				return on_clicked
+			b.clicked.connect(on_clicked_factory(label, data))
+			hbox.addWidget(b)
+
+		hbox.addStretch(1)
+		vbox.addWidget(self.log_win)
+		vbox.addLayout(hbox)
+
+		self.resize(1000, 800)
+		self.setWindowTitle("Smith")
+		self.setLayout(vbox)
+		self.show()
+
+	def closeEvent(self, event):
+		event.ignore()
+		self.app.close()
+
 class App:
-	SUPPORTED_ALGOS = {
-		"monero_v7",
-		"heavy",
-	}
+	def __init__(self, loop):
+		self.loop = loop
+		self.proc = None
+		self.algo = None
+
+		self.server = None
+		self.miner_writer = None
+		self.miner_state = "off"
+
+		# gui and loggin methods
+		self.main_win = MainWin(self)
+		self.miner_log = self.main_win.log_win.miner_log
+		self.proxy_log = self.main_win.log_win.proxy_log
+
+		# signal
+		def on_sigint():
+			self.proxy_log("received signal SIGINT.")
+			self.close()
+		self.loop.add_signal_handler(signal.SIGINT, on_sigint)
 
 
-	def miner_log(self, msg):
-		for line in msg.split("\n"):
-			print "\033[35m[miner]\033[m" + line
+		# pool
+		self.pool_writer = None
+		self.pool_restart_on_disconnect = True
+		self.pool_task = self.loop.create_task(self.pool_coro())
 
 
-	def log(self, msg):
-		for line in msg.split("\n"):
-			print "\033[33m[proxy]\033[m" + line
+	def run(self):
+		with self.loop: self.loop.run_forever()
+
+		# close log file
+		self.proxy_log("bye.")
+		self.main_win.log_win.file.close()
 
 
-	def run(self, algo=None):
-		self.loop = pyuv.Loop.default_loop()
-
-		# catch signals
-		self.sig = pyuv.Signal(self.loop)
-		self.sig.start(self.on_signal, signal.SIGINT)
-
-		# listen in stdin
-		self.stdin = pyuv.Pipe(self.loop)
-		self.stdin.open(sys.stdin.fileno())
-		self.stdin.start_read(self.on_input)
-
-		self.algo       = None
-		self.proc       = None
-		self.proc_state = "off"
-		self.miner      = None
-		self.listener   = None
-
-		self.connect_to_pool()
-
-		# enter main loop
-		self.loop.run()
+	def close(self):
+		async def terminate_coro():
+			self.pool_restart_on_disconnect = False
+			if self.pool_writer: self.pool_writer.close()
+			await self.pool_task
+			await self.stop_miner_coro()
+			self.loop.stop()
+		self.proxy_log("exiting...")
+		self.loop.create_task(terminate_coro())
 
 
-	def connect_to_pool(self):
-		self.log("connecting to pool")
-		self.pool = pyuv.TCP(self.loop)
-		self.pool.connect((pool_addr, pool_port), self.on_pool_connected)
+	async def pool_coro(self):
 
+		self.proxy_log("connecting to pool %s..." % str((pool_addr, pool_port)))
+		try:
+			reader, writer = await asyncio.open_connection(pool_addr, pool_port)
+		except Exception as e:
+			self.proxy_log("error connecting to pool: %s." % e.strerror)
+			return
 
-	def on_pool_connected(self, tcp, error):
-		self.log("connected to pool")
-		self.pool.start_read(self.on_pool_read)
+		self.proxy_log("connected to pool.")
+		self.pool_writer = writer
+
 		if self.algo == None:
+			self.proxy_log("sending fake login to pool:")
 			login = {
 				"id": 1,
 				"method": "login",
 				"params": {
 					"agent": "smith/0.0.1",
-					"login": "rig",
-					"pass": "x",
+					"login": config["login"],
+					"pass": config["pass"],
 				}
 			}
-			self.log("sending fake login to pool:")
-			self.log(to_pretty_json(login))
-			self.pool.write(to_json(login))
-
+			self.proxy_log(to_pretty_json(login))
+			writer.write((to_json(login) + "\n").encode())
 		else:
-			self.start_miner_process()
+			# start server and run miner
+			assert self.proc   == None
+			assert self.server == None
+			self.server_task = self.loop.create_task(self.run_server_coro())
+
+		while True:
+			line = await reader.readline()
+			if not line: break
+			line = line.decode()
+			o = from_json(line)
+			self.proxy_log("pool says:")
+			self.proxy_log(to_pretty_json(o))
+
+			# find algorithm
+			algo = None
+			if "result" in o and "job" in o["result"] and "algo" in o["result"]["job"]:
+				algo = o["result"]["job"]["algo"]
+				del o["result"]["job"]["algo"]
+			elif o.get("method") == "job" and "algo" in o["params"]:
+				algo = o["params"]["algo"]
+				del o["params"]["algo"]
+
+			if algo and algo != self.algo:
+				self.proxy_log("algorithm has changed from %s to %s." % (self.algo, algo))
+				self.algo = algo
+				if self.algo not in supported_algos:
+					self.proxy_log("algorithm is not supported.")
+					await self.stop_miner_coro()
+					continue
+				else:
+					self.proxy_log("algorithm is supported.")
+					break
 
 
-	def start_miner_process(self):
-		assert self.proc == None
-		if self.algo in self.SUPPORTED_ALGOS:
-			self.log("start miner process")
-			cwd = os.path.join(os.getcwd(), "miners", self.algo)
-			self.stdin  = pyuv.Pipe(self.loop, True)
-			self.stdout = pyuv.Pipe(self.loop, True)
+			# pass data to to miner
+			if self.miner_writer:
+				self.miner_writer.write((to_json(o) + "\n").encode())
 
-			self.proc = pyuv.Process.spawn(
-				self.loop,
-				args = [os.path.join(cwd, "xmr-stak")],
-				cwd = cwd,
-				flags = pyuv.UV_PROCESS_WINDOWS_HIDE,
-				stdio = [
-					pyuv.StdIO(stream=self.stdin,  flags=pyuv.UV_CREATE_PIPE | pyuv.UV_READABLE_PIPE),
-					pyuv.StdIO(stream=self.stdout, flags=pyuv.UV_CREATE_PIPE | pyuv.UV_WRITABLE_PIPE),
-					#pyuv.StdIO(fd=2, flags=pyuv.UV_INHERIT_FD)
-					pyuv.StdIO(flags=pyuv.UV_IGNORE)
-				],
-				exit_callback=self.on_miner_process_exited)
-			self.proc_state = "running"
-			self.stdout.start_read(self.on_miner_process_output)
+		self.proxy_log("disconnected from pool.")
+		writer.close()
 
-			# init listener
-			self.listener = pyuv.TCP(self.loop)
-			self.listener.bind(("127.0.0.1", local_port))
-			self.listener.listen(self.on_miner_connected, 1)
+		# restart
+		if self.pool_restart_on_disconnect:
+			await self.stop_miner_coro()
+			self.pool_task = self.loop.create_task(self.pool_coro())
 
 
-	def handle_action(self):
-		action = self.action
-		self.action = None
-		if action == "exit":
-			self.loop.stop()
-		elif action == "reconnect":
-			self.connect_to_pool()
+
+	async def run_server_coro(self):
+		async def on_connected(reader, writer):
+			addr = writer.get_extra_info('peername')
+			self.proxy_log("miner connected %s." % str(addr))
+			self.server.close()
+
+			self.miner_writer = writer
+			while True:
+				line = await reader.readline()
+				if not line: break
+				line = line.decode()
+				o = from_json(line)
+				self.proxy_log("miner says:")
+				self.proxy_log(to_pretty_json(o))
+
+				# find algorithm
+				if o.get("method") == "login":
+					o["params"]["login"] = config["login"]
+					o["params"]["pass"] = config["pass"]
+
+				# pass data to pool
+				self.pool_writer.write((to_json(o) + "\n").encode())
+
+			if self.miner_state == "stopping":
+				self.proxy_log("miner disconnected.")
+			else:
+				self.proxy_log("error: miner disconnected unexpectedly.")
+			writer.close()
+			self.miner_writer = None
+
+		local_addr = "127.0.0.1"
+		self.proxy_log("listening for miner to connect %s..." % str((local_addr, local_port)))
+		self.server = await asyncio.start_server(on_connected, local_addr, local_port, backlog=1)
+
+		self.miner_task = self.loop.create_task(self.run_miner_coro())
+
+		await self.server.wait_closed()
+		self.server = None
 
 
-	def stop_miner_process(self, action=None):
-		self.action = action
-		if self.proc:
-			if self.proc_state == "running":
-				self.log("stopping miner process")
-				self.proc.kill(2)
-				self.proc_state = "stopping"
+	async def run_miner_coro(self):
+		assert self.algo in supported_algos
+		assert self.miner_state == "off"
+
+		self.proxy_log("starting miner process...")
+		self.proc = await asyncio.create_subprocess_exec(
+			"./xmr-stak",
+			cwd=os.path.join(".", "miners", self.algo),
+			stdin=asyncio.subprocess.PIPE,
+			stdout=asyncio.subprocess.PIPE)
+		self.proxy_log("miner process running.")
+		self.miner_state = "on"
+		while True:
+			line = await self.proc.stdout.readline()
+			if not line: break
+			line = line.decode()
+			self.miner_log(line.rstrip())
+		await self.proc.wait()
+		if self.miner_state == "stopping":
+			self.proxy_log("miner process stopped (%d)." % self.proc.returncode)
 		else:
-			self.handle_action()
-
-
-	def on_miner_process_exited(self, proc, status, sig):
-		self.log("miner process stopped")
-		self.proc.close()
-		self.stdin.close()
-		self.stdout.close()
+			self.proxy_log("error: miner process stopped unexpectedly (%d)." % self.proc.returncode)
+			# close pool to toggle restart
+			self.pool_writer.close()
+		self.miner_state = "off"
 		self.proc = None
-		self.proc_state = "off"
-		self.handle_action()
 
 
-	def on_miner_connected(self, tcp, error):
-		self.log("miner connected")
-		self.miner = pyuv.TCP(self.loop)
-		self.listener.accept(self.miner)
-		self.listener.close()
-		self.listener = None
-		self.miner.start_read(self.on_miner_read)
-
-
-	def on_miner_read(self, tcp, data, error):
-		if not data:
-			self.miner.close()
-			self.miner = None
-			if self.proc_state == "stopping":
-				self.log("miner disconnected")
-			elif self.proc_state == "running":
-				self.log("miner disconnected unexpectedly")
-				self.log("disconnect to pool")
-				self.pool.close()
-				self.pool = None
-				self.stop_miner_process("reconnect")
-			else:
-				assert False
-			return
-
-		self.log("miner says:")
-		for line in data.split("\n"):
-			if not line: continue
-			self.log(line)
-			o = from_json(line)
-			self.log(to_pretty_json(o))
-
-		# pass data on to pool
-		if self.pool:
-			self.pool.write(data)
-
-
-	def on_pool_read(self, tcp, data, error):
-		if not data:
-			self.log("disconnected to pool :(")
-			self.pool.close()
-			self.pool = None
-			return
-
-		self.log("pool says:")
-		algo = None
-		for line in data.split("\n"):
-			if not line: continue
-			self.log(line)
-			o = from_json(line)
-			self.log(to_pretty_json(o))
-			if "result" in o and "job" in o["result"]:
-				algo = o["result"]["job"].get("algo")
-			elif "method" in o and o["method"] == "job":
-				algo = o["params"].get("algo")
-
-		if algo and algo != self.algo:
-			self.log("algorithm has changed from %s to %s" % (self.algo, algo))
-			self.algo = algo
-			if self.algo not in self.SUPPORTED_ALGOS:
-				self.log("algorithm is not supported")
-				self.stop_miner_process()
-			else:
-				self.log("algorithm is supported")
-				if self.pool:
-					self.log("disconnect to pool")
-					self.pool.close()
-					self.pool = None
-				self.stop_miner_process("reconnect")
-			return
-
-		if self.miner: self.miner.write(data)
-
-
-	def on_miner_process_output(self, pipe, data, error):
-		if not data: return
-		self.miner_log(data.strip())
-
-
-	def on_input(self, pipe, data, error):
-		cmd = data.strip()
-		if self.proc:
-			# pass command to miner process
-			self.stdin.write(cmd)
-
-
-	def on_signal(self, handle, signum):
-		self.log("exiting")
-		self.sig.close()
-
-		if self.pool:
-			self.pool.close()
-			self.pool = None
-		if self.miner:
-			self.miner.close()
-			self.miner = None
-		if self.listener:
-			self.listener.close()
-			self.listener = None
-
-		self.stop_miner_process("exit")
+	async def stop_miner_coro(self):
+		if self.proc and not self.proc.returncode:
+			assert self.miner_state == "on"
+			self.miner_state = "stopping"
+			self.proxy_log("stopping miner process...")
+			self.proc.send_signal(signal.SIGINT)
+			await self.miner_task
+			await self.server_task
 
 
 if __name__ == "__main__":
-	App().run()
+	qt = QApplication(sys.argv)
+	loop = QEventLoop(qt)
+	loop.set_debug(True)
+	asyncio.set_event_loop(loop)
+	app = App(loop)
+	app.run()
