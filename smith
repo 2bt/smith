@@ -13,22 +13,6 @@ from quamash import QEventLoop
 #print("Platform:", sys.platform)
 
 
-# TODO: make config nice
-pool_addr  = "78.46.85.142"
-pool_port  = 35349
-local_port = 55555
-config = {
-	"font-size": 10,
-	"login": "rig2",
-	"pass": "x",
-	"log-file": "log.txt",
-}
-supported_algos = {
-	"monero_v7",
-	"heavy",
-}
-
-
 def to_json(o):
 	return json.dumps(o)
 
@@ -39,17 +23,17 @@ def from_json(s):
 	return json.loads(s)
 
 
-
 class LogWin(QPlainTextEdit):
-	def __init__(self):
+	def __init__(self, app):
 		QPlainTextEdit.__init__(self)
+		self.app = app
 		self.setReadOnly(True)
 		self.setUndoRedoEnabled(False)
-		font = QtGui.QFont("Monospace", config["font-size"])
+		font = QtGui.QFont("Monospace", 10)
 		self.setFont(font)
 		self.setLineWrapMode(0)
 		self.setMaximumBlockCount(1000)
-		self.file = open(config["log-file"], "w")
+		self.file = open("log.txt", "w")
 
 		bg_color = "#fff"
 		self.setStyleSheet("background-color:" + bg_color);
@@ -95,7 +79,7 @@ class MainWin(QWidget):
 	def __init__(self, app):
 		QWidget.__init__(self)
 		self.app = app
-		self.log_win = LogWin()
+		self.log_win = LogWin(app)
 		hbox = QHBoxLayout()
 		vbox = QVBoxLayout()
 
@@ -108,9 +92,9 @@ class MainWin(QWidget):
 			b = QPushButton(label)
 			def on_clicked_factory(label, data):
 				def on_clicked():
-					if self.app.proc:
+					if app.proc:
 						self.log_win.log("send %r to miner process." % data)
-						self.app.proc.stdin.write(data.encode())
+						app.proc.stdin.write(data.encode())
 					else:
 						self.log_win.log_error("miner process not running.")
 				return on_clicked
@@ -128,7 +112,7 @@ class MainWin(QWidget):
 
 	def closeEvent(self, event):
 		event.ignore()
-		self.app.close()
+		app.close()
 
 class App:
 	def __init__(self, loop):
@@ -139,6 +123,7 @@ class App:
 		self.server = None
 		self.miner_writer = None
 		self.miner_state = "off"
+
 
 		# gui and loggin methods
 		self.main_win = MainWin(self)
@@ -152,11 +137,64 @@ class App:
 			self.close()
 		self.loop.add_signal_handler(signal.SIGINT, on_sigint)
 
-
 		# pool
 		self.pool_writer = None
 		self.pool_restart_on_disconnect = True
+		self.pool_task = None
+
+		# load config
+		self.load_config()
+		if not self.config: return
+
 		self.pool_task = self.loop.create_task(self.pool_coro())
+
+
+	def load_config(self):
+		self.log("reading config...")
+		self.config = None
+		try:
+			filename = "config.txt"
+			with open(filename) as f: data = f.read()
+		except:
+			self.log_error("cannot open config file %r." % filename)
+			return
+		try:
+			import ast
+			config = ast.literal_eval(data)
+		except SyntaxError as e:
+			self.log_error("cannot parse config file %r: %s (line %d)." % (filename, e.msg, e.lineno))
+			return
+
+		# assure validity of config structure
+		try:
+			assert type(config) == dict
+			check = {
+				"local-port": int,
+				"pool-addr": str,
+				"pool-port": int,
+				"login": str,
+				"pass": str,
+				"algos": dict,
+			}
+			for k, t in check.items():
+				assert k in config, "missing key %r" % k
+				assert type(config[k]) == t, "type mismatch"
+		except AssertionError as e:
+			self.log_error("invalid config structure: %s." % e)
+			return
+		try:
+			for k, v in config["algos"].items():
+				assert type(k) == str
+				assert type(v) == dict
+				for k in ["cmd", "cwd"]:
+					assert k in v
+					assert type(v[k]) == str
+		except AssertionError as e:
+			self.log_error("invalid config structure.")
+			return
+
+		self.config = config
+		self.log("config read.")
 
 
 	def run(self):
@@ -171,7 +209,7 @@ class App:
 		async def terminate_coro():
 			self.pool_restart_on_disconnect = False
 			if self.pool_writer: self.pool_writer.close()
-			await self.pool_task
+			if self.pool_task: await self.pool_task
 			await self.stop_miner_coro()
 			self.loop.stop()
 		self.log("exiting...")
@@ -179,6 +217,9 @@ class App:
 
 
 	async def pool_coro(self):
+
+		pool_addr = self.config["pool-addr"]
+		pool_port = self.config["pool-port"]
 
 		self.log("connecting to pool %s..." % str((pool_addr, pool_port)))
 		try:
@@ -197,8 +238,8 @@ class App:
 				"method": "login",
 				"params": {
 					"agent": "smith/0.0.1",
-					"login": config["login"],
-					"pass": config["pass"],
+					"login": self.config["login"],
+					"pass": self.config["pass"],
 				}
 			}
 			self.log(to_pretty_json(login))
@@ -229,7 +270,7 @@ class App:
 			if algo and algo != self.algo:
 				self.log("algorithm has changed from %s to %s." % (self.algo, algo))
 				self.algo = algo
-				if self.algo not in supported_algos:
+				if self.algo not in self.config["algos"]:
 					self.log("algorithm is not supported.")
 					await self.stop_miner_coro()
 					continue
@@ -269,8 +310,8 @@ class App:
 
 				# find algorithm
 				if o.get("method") == "login":
-					o["params"]["login"] = config["login"]
-					o["params"]["pass"] = config["pass"]
+					o["params"]["login"] = self.config["login"]
+					o["params"]["pass"] = self.config["pass"]
 
 				# pass data to pool
 				self.pool_writer.write((to_json(o) + "\n").encode())
@@ -283,6 +324,7 @@ class App:
 			self.miner_writer = None
 
 		local_addr = "127.0.0.1"
+		local_port = self.config["local-port"]
 		self.log("listening for miner to connect %s..." % str((local_addr, local_port)))
 		self.server = await asyncio.start_server(on_connected, local_addr, local_port, backlog=1)
 
@@ -293,15 +335,22 @@ class App:
 
 
 	async def run_miner_coro(self):
-		assert self.algo in supported_algos
+		assert self.algo in self.config["algos"]
 		assert self.miner_state == "off"
 
+		algo_config = self.config["algos"][self.algo]
+
 		self.log("starting miner process...")
-		self.proc = await asyncio.create_subprocess_exec(
-			"./xmr-stak",
-			cwd=os.path.join(".", "miners", self.algo),
-			stdin=asyncio.subprocess.PIPE,
-			stdout=asyncio.subprocess.PIPE)
+		try:
+			self.proc = await asyncio.create_subprocess_exec(
+				algo_config["cmd"],
+				cwd=algo_config["cwd"],
+				stdin=asyncio.subprocess.PIPE,
+				stdout=asyncio.subprocess.PIPE)
+		except FileNotFoundError as e:
+			self.log_error("cannot start miner process: %s." % e.strerror)
+			return
+
 		self.log("miner process running.")
 		self.miner_state = "on"
 		while True:
