@@ -7,7 +7,7 @@ import json
 import os
 
 from PyQt5.QtWidgets import *
-from PyQt5.QtGui import QFont
+import PyQt5.QtGui as QtGui
 from quamash import QEventLoop
 
 #print("Platform:", sys.platform)
@@ -44,27 +44,51 @@ class LogWin(QPlainTextEdit):
 	def __init__(self):
 		QPlainTextEdit.__init__(self)
 		self.setReadOnly(True)
-		font = QFont("Monospace", config["font-size"])
+		self.setUndoRedoEnabled(False)
+		font = QtGui.QFont("Monospace", config["font-size"])
 		self.setFont(font)
 		self.setLineWrapMode(0)
 		self.setMaximumBlockCount(1000)
 		self.file = open(config["log-file"], "w")
 
+		bg_color = "#fff"
+		self.setStyleSheet("background-color:" + bg_color);
+		self.normal_format = QtGui.QTextBlockFormat()
+		self.normal_format.setBackground(QtGui.QColor(bg_color))
+
+		self.error_format = QtGui.QTextBlockFormat()
+		self.error_format.setBackground(QtGui.QColor("#faa"))
+
+		self.miner_format = QtGui.QTextBlockFormat()
+		self.miner_format.setBackground(QtGui.QColor("#ffc"))
+
+
 	def miner_log(self, text):
 		for line in text.rstrip().split("\n"):
-			self.appendHtml("<pre><b><font color='#800'>miner: </font></b>" + html.escape(line) + "</pre>")
-			#self.appendHtml("<pre style='background-color:#ccc'>" + html.escape(line) + "</pre>")
-			self.file.write("miner: " + line + "\n")
-			print("\033[35mminer:\033[m", line)
+			self.appendHtml("<pre style='color:#333'>%s</pre>" % html.escape(line))
+			self.file.write("[miner]%s\n" % line)
+			print("\033[33m[miner]\033[m" + line)
 		self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
+		cursor = self.textCursor()
+		cursor.setBlockFormat(self.miner_format)
 
-	def proxy_log(self, text):
+	def log(self, text):
 		for line in text.rstrip().split("\n"):
-			self.appendHtml("<pre><b><font color='#008'>proxy: </font></b>" + html.escape(line) + "</pre>")
-			#self.appendHtml("<pre>" + html.escape(line) + "</pre>")
-			self.file.write("proxy: " + line + "\n")
-			print("\033[33mproxy:\033[m", line)
+			self.appendPlainText(line)
+			self.file.write(line + "\n")
+			print(line)
 		self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
+		cursor = self.textCursor()
+		cursor.setBlockFormat(self.normal_format)
+
+	def log_error(self, text):
+		for line in text.rstrip().split("\n"):
+			self.appendHtml("<pre>error: %s</pre>" % html.escape(line))
+			self.file.write("error: %s\n" % line)
+			print("\033[31merror:\033[m "+ line)
+		self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
+		cursor = self.textCursor()
+		cursor.setBlockFormat(self.error_format)
 
 
 class MainWin(QWidget):
@@ -85,10 +109,10 @@ class MainWin(QWidget):
 			def on_clicked_factory(label, data):
 				def on_clicked():
 					if self.app.proc:
-						self.log_win.proxy_log("send %r to miner process." % data)
+						self.log_win.log("send %r to miner process." % data)
 						self.app.proc.stdin.write(data.encode())
 					else:
-						self.log_win.proxy_log("error: miner process not running.")
+						self.log_win.log_error("miner process not running.")
 				return on_clicked
 			b.clicked.connect(on_clicked_factory(label, data))
 			hbox.addWidget(b)
@@ -119,11 +143,12 @@ class App:
 		# gui and loggin methods
 		self.main_win = MainWin(self)
 		self.miner_log = self.main_win.log_win.miner_log
-		self.proxy_log = self.main_win.log_win.proxy_log
+		self.log = self.main_win.log_win.log
+		self.log_error = self.main_win.log_win.log_error
 
 		# signal
 		def on_sigint():
-			self.proxy_log("received signal SIGINT.")
+			self.log("received signal SIGINT.")
 			self.close()
 		self.loop.add_signal_handler(signal.SIGINT, on_sigint)
 
@@ -138,7 +163,7 @@ class App:
 		with self.loop: self.loop.run_forever()
 
 		# close log file
-		self.proxy_log("bye.")
+		self.log("bye.")
 		self.main_win.log_win.file.close()
 
 
@@ -149,24 +174,24 @@ class App:
 			await self.pool_task
 			await self.stop_miner_coro()
 			self.loop.stop()
-		self.proxy_log("exiting...")
+		self.log("exiting...")
 		self.loop.create_task(terminate_coro())
 
 
 	async def pool_coro(self):
 
-		self.proxy_log("connecting to pool %s..." % str((pool_addr, pool_port)))
+		self.log("connecting to pool %s..." % str((pool_addr, pool_port)))
 		try:
 			reader, writer = await asyncio.open_connection(pool_addr, pool_port)
 		except Exception as e:
-			self.proxy_log("error connecting to pool: %s." % e.strerror)
+			self.log_error("cannot connect to pool: %s." % e.strerror)
 			return
 
-		self.proxy_log("connected to pool.")
+		self.log("connected to pool.")
 		self.pool_writer = writer
 
 		if self.algo == None:
-			self.proxy_log("sending fake login to pool:")
+			self.log("sending fake login to pool:")
 			login = {
 				"id": 1,
 				"method": "login",
@@ -176,7 +201,7 @@ class App:
 					"pass": config["pass"],
 				}
 			}
-			self.proxy_log(to_pretty_json(login))
+			self.log(to_pretty_json(login))
 			writer.write((to_json(login) + "\n").encode())
 		else:
 			# start server and run miner
@@ -189,8 +214,8 @@ class App:
 			if not line: break
 			line = line.decode()
 			o = from_json(line)
-			self.proxy_log("pool says:")
-			self.proxy_log(to_pretty_json(o))
+			self.log("pool says:")
+			self.log(to_pretty_json(o))
 
 			# find algorithm
 			algo = None
@@ -202,14 +227,14 @@ class App:
 				del o["params"]["algo"]
 
 			if algo and algo != self.algo:
-				self.proxy_log("algorithm has changed from %s to %s." % (self.algo, algo))
+				self.log("algorithm has changed from %s to %s." % (self.algo, algo))
 				self.algo = algo
 				if self.algo not in supported_algos:
-					self.proxy_log("algorithm is not supported.")
+					self.log("algorithm is not supported.")
 					await self.stop_miner_coro()
 					continue
 				else:
-					self.proxy_log("algorithm is supported.")
+					self.log("algorithm is supported.")
 					break
 
 
@@ -217,7 +242,7 @@ class App:
 			if self.miner_writer:
 				self.miner_writer.write((to_json(o) + "\n").encode())
 
-		self.proxy_log("disconnected from pool.")
+		self.log("disconnected from pool.")
 		writer.close()
 
 		# restart
@@ -230,7 +255,7 @@ class App:
 	async def run_server_coro(self):
 		async def on_connected(reader, writer):
 			addr = writer.get_extra_info('peername')
-			self.proxy_log("miner connected %s." % str(addr))
+			self.log("miner connected %s." % str(addr))
 			self.server.close()
 
 			self.miner_writer = writer
@@ -239,8 +264,8 @@ class App:
 				if not line: break
 				line = line.decode()
 				o = from_json(line)
-				self.proxy_log("miner says:")
-				self.proxy_log(to_pretty_json(o))
+				self.log("miner says:")
+				self.log(to_pretty_json(o))
 
 				# find algorithm
 				if o.get("method") == "login":
@@ -251,14 +276,14 @@ class App:
 				self.pool_writer.write((to_json(o) + "\n").encode())
 
 			if self.miner_state == "stopping":
-				self.proxy_log("miner disconnected.")
+				self.log("miner disconnected.")
 			else:
-				self.proxy_log("error: miner disconnected unexpectedly.")
+				self.log_error("miner disconnected unexpectedly.")
 			writer.close()
 			self.miner_writer = None
 
 		local_addr = "127.0.0.1"
-		self.proxy_log("listening for miner to connect %s..." % str((local_addr, local_port)))
+		self.log("listening for miner to connect %s..." % str((local_addr, local_port)))
 		self.server = await asyncio.start_server(on_connected, local_addr, local_port, backlog=1)
 
 		self.miner_task = self.loop.create_task(self.run_miner_coro())
@@ -271,13 +296,13 @@ class App:
 		assert self.algo in supported_algos
 		assert self.miner_state == "off"
 
-		self.proxy_log("starting miner process...")
+		self.log("starting miner process...")
 		self.proc = await asyncio.create_subprocess_exec(
 			"./xmr-stak",
 			cwd=os.path.join(".", "miners", self.algo),
 			stdin=asyncio.subprocess.PIPE,
 			stdout=asyncio.subprocess.PIPE)
-		self.proxy_log("miner process running.")
+		self.log("miner process running.")
 		self.miner_state = "on"
 		while True:
 			line = await self.proc.stdout.readline()
@@ -286,9 +311,9 @@ class App:
 			self.miner_log(line.rstrip())
 		await self.proc.wait()
 		if self.miner_state == "stopping":
-			self.proxy_log("miner process stopped (%d)." % self.proc.returncode)
+			self.log("miner process stopped (%d)." % self.proc.returncode)
 		else:
-			self.proxy_log("error: miner process stopped unexpectedly (%d)." % self.proc.returncode)
+			self.log_error("miner process stopped unexpectedly (%d)." % self.proc.returncode)
 			# close pool to toggle restart
 			self.pool_writer.close()
 		self.miner_state = "off"
@@ -299,7 +324,7 @@ class App:
 		if self.proc and not self.proc.returncode:
 			assert self.miner_state == "on"
 			self.miner_state = "stopping"
-			self.proxy_log("stopping miner process...")
+			self.log("stopping miner process...")
 			self.proc.send_signal(signal.SIGINT)
 			await self.miner_task
 			await self.server_task
