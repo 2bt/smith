@@ -10,7 +10,9 @@ from PyQt5.QtWidgets import *
 import PyQt5.QtGui as QtGui
 from quamash import QEventLoop
 
-#print("Platform:", sys.platform)
+if sys.platform == "win32":
+	import colorama
+	colorama.init()
 
 
 def to_json(o):
@@ -29,8 +31,8 @@ class LogWin(QPlainTextEdit):
 		self.app = app
 		self.setReadOnly(True)
 		self.setUndoRedoEnabled(False)
-		font = QtGui.QFont("Monospace", 10)
-		self.setFont(font)
+#		font = QtGui.QFont("Monospace", 10)
+#		self.setFont(font)
 		self.setLineWrapMode(0)
 		self.setMaximumBlockCount(1000)
 		self.file = open("log.txt", "w")
@@ -58,7 +60,7 @@ class LogWin(QPlainTextEdit):
 
 	def log(self, text):
 		for line in text.rstrip().split("\n"):
-			self.appendPlainText(line)
+			self.appendHtml("<pre>%s</pre>" % html.escape(line))
 			self.file.write(line + "\n")
 			print(line)
 		self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
@@ -133,10 +135,11 @@ class App:
 		self.log_error = self.main_win.log_win.log_error
 
 		# signal
-		def on_sigint():
-			self.log("received signal SIGINT.")
-			self.close()
-		self.loop.add_signal_handler(signal.SIGINT, on_sigint)
+		if sys.platform == "linux2":
+			def on_sigint():
+				self.log("received signal SIGINT.")
+				self.close()
+			self.loop.add_signal_handler(signal.SIGINT, on_sigint)
 
 		# pool
 		self.pool_writer = None
@@ -340,16 +343,23 @@ class App:
 		assert self.miner_state == "off"
 
 		algo_config = self.config["algos"][self.algo]
+		args = algo_config["cmd"].split(" ", 1)
+		cmd = args.pop(0)
+		args = args[0] if args else ""
 
 		self.log("starting miner process...")
 		try:
 			self.proc = await asyncio.create_subprocess_exec(
-				algo_config["cmd"],
+				cmd,
+				args,
 				cwd=algo_config["cwd"],
 				stdin=asyncio.subprocess.PIPE,
 				stdout=asyncio.subprocess.PIPE)
 		except FileNotFoundError as e:
 			self.log_error("cannot start miner process: %s." % e.strerror)
+			return
+		except Exception as e:
+			self.log_error("%s." % e)
 			return
 
 		self.log("miner process running.")
@@ -366,6 +376,9 @@ class App:
 			self.log_error("miner process stopped unexpectedly (%d)." % self.proc.returncode)
 			# close pool to toggle restart
 			self.pool_writer.close()
+		if self.server:
+			self.server.close()
+			self.server = None
 		self.miner_state = "off"
 		self.proc = None
 
@@ -378,8 +391,9 @@ class App:
 
 			# TODO: how do we stop the miner process?
 
-			self.proc.send_signal(signal.SIGINT)
+			#self.proc.send_signal(signal.SIGINT)
 			#self.miner_writer.write("q".encode())
+			self.proc.kill()
 
 			await self.miner_task
 			await self.server_task

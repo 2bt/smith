@@ -6,15 +6,25 @@
 	"login": "rig2",
 	"pass": "x",
 	"algos": {
+
 		"heavy": {
-			"cmd": "./xmr-stak",
-			"cwd": "miners/heavy",
+			"cmd": "cast_xmr-vega.exe --algo=2 --nonicehash --reconnects 3 --fastjobswitch --remoteaccess --opencl 1 -G 0,1,2,3,4,5,6,7 -S trill.sebgreen.net:14349 -u rig -p m2",
+			"cwd": ".",
 			"buttons": [ ["hashrate", "h"], ["results", "r"], ["connection", "c"] ]
 		},
-		"monero_v7": {
-			"cmd": "./xmr-stak",
-			"cwd": "miners/monero_v7",
-			"buttons": [ ["hashrate", "h"], ["results", "r"], ["connection", "c"] ]
-		}
+
+#		"heavy": {
+#			"cmd": "xmr-stak",
+#			"cwd": "miners\heavy",
+#			"buttons": [ ["hashrate", "h"], ["results", "r"], ["connection", "c"] ]
+#		},
+
+#		"monero_v7": {
+#			"cmd": "xmr-stak",
+#			"cwd": "miners\monero_v7",
+#			"buttons": [ ["hashrate", "h"], ["results", "r"], ["connection", "c"] ]
+#		},
+
 	}
+
 }
