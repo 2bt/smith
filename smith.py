@@ -35,7 +35,7 @@ class LogWin(QPlainTextEdit):
 		self.setMaximumBlockCount(1000)
 		self.file = open("log.txt", "w")
 
-		bg_color = "#fff"
+		bg_color = "#ddd"
 		self.setStyleSheet("background-color:" + bg_color);
 		self.normal_format = QtGui.QTextBlockFormat()
 		self.normal_format.setBackground(QtGui.QColor(bg_color))
@@ -80,7 +80,7 @@ class MainWin(QWidget):
 		QWidget.__init__(self)
 		self.app = app
 		self.log_win = LogWin(app)
-		hbox = QHBoxLayout()
+		self.button_hbox = QHBoxLayout()
 		vbox = QVBoxLayout()
 
 		# buttons
@@ -99,11 +99,12 @@ class MainWin(QWidget):
 						self.log_win.log_error("miner process not running.")
 				return on_clicked
 			b.clicked.connect(on_clicked_factory(label, data))
-			hbox.addWidget(b)
+			self.button_hbox.addWidget(b)
 
-		hbox.addStretch(1)
+		self.button_hbox.addStretch(1)
+
 		vbox.addWidget(self.log_win)
-		vbox.addLayout(hbox)
+		vbox.addLayout(self.button_hbox)
 
 		self.resize(1000, 800)
 		self.setWindowTitle("Smith")
@@ -374,7 +375,12 @@ class App:
 			assert self.miner_state == "on"
 			self.miner_state = "stopping"
 			self.log("stopping miner process...")
+
+			# TODO: how do we stop the miner process?
+
 			self.proc.send_signal(signal.SIGINT)
+			#self.miner_writer.write("q".encode())
+
 			await self.miner_task
 			await self.server_task
 

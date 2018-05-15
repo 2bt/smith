@@ -1,0 +1,20 @@
+{
+	# comment
+	"local-port": 55555,
+	"pool-addr": "78.46.85.142",
+	"pool-port": 35349,
+	"login": "rig2",
+	"pass": "x",
+	"algos": {
+		"heavy": {
+			"cmd": "./xmr-stak",
+			"cwd": "miners/heavy",
+			"buttons": [ ["hashrate", "h"], ["results", "r"], ["connection", "c"] ]
+		},
+		"monero_v7": {
+			"cmd": "./xmr-stak",
+			"cwd": "miners/monero_v7",
+			"buttons": [ ["hashrate", "h"], ["results", "r"], ["connection", "c"] ]
+		}
+	}
+}
