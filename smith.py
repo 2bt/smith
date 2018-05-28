@@ -379,13 +379,13 @@ class App:
 		pause = time.time() - self.miner_exit_time
 		delay = max(0, self.config["miner-restart-delay"] - pause)
 		if delay:
-			self.log("sleep before miner restart...")
+			self.log("sleeping before miner restart...")
 			await asyncio.sleep(delay)
 			if self.exiting: return
 			self.log("sleeping done.")
 
 		algo_config = self.config["algos"][self.algo]
-		args = algo_config["cmd"].split(" ", 1)
+		args = algo_config["cmd"].split()
 
 		self.log("starting miner process...")
 		try:
@@ -396,6 +396,9 @@ class App:
 				stdout=asyncio.subprocess.PIPE)
 		except FileNotFoundError as e:
 			self.log_error("cannot start miner process: %s." % e.strerror)
+			if self.server:
+				self.server.close()
+				self.server = None
 			return
 		except Exception as e:
 			self.log_error("%s." % e)
