@@ -91,6 +91,7 @@ class MainWin(QWidget):
 		self.log_win = LogWin(app)
 
 		self.button_hbox = None
+		self.buttons = []
 
 		self.vbox = QVBoxLayout()
 		self.vbox.addWidget(self.log_win)
@@ -105,6 +106,8 @@ class MainWin(QWidget):
 		if self.button_hbox:
 			self.vbox.removeItem(self.button_hbox)
 			self.button_hbox = None
+			for b in self.buttons: b.setParent(None)
+			self.buttons = []
 
 
 	def add_buttons(self, button_desc):
@@ -122,6 +125,7 @@ class MainWin(QWidget):
 				return on_clicked
 			b.clicked.connect(on_clicked_factory(label, data))
 			self.button_hbox.addWidget(b)
+			self.buttons.append(b)
 		self.button_hbox.addStretch(1)
 		self.vbox.addLayout(self.button_hbox)
 
