@@ -5,6 +5,7 @@
 	"pool-port": 35349,
 	"login": "rig2",
 	"pass": "x",
+	"miner-restart-delay": 5,
 	"algos": {
 
 		"heavy": {
