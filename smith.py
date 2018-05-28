@@ -58,6 +58,7 @@ class LogWin(QPlainTextEdit):
 		cursor = self.textCursor()
 		cursor.setBlockFormat(self.miner_format)
 
+
 	def log(self, text):
 		for line in text.rstrip().split("\n"):
 			self.appendHtml("<pre>%s</pre>" % html.escape(line))
@@ -66,6 +67,7 @@ class LogWin(QPlainTextEdit):
 		self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
 		cursor = self.textCursor()
 		cursor.setBlockFormat(self.normal_format)
+
 
 	def log_error(self, text):
 		for line in text.rstrip().split("\n"):
@@ -82,15 +84,28 @@ class MainWin(QWidget):
 		QWidget.__init__(self)
 		self.app = app
 		self.log_win = LogWin(app)
-		self.button_hbox = QHBoxLayout()
-		vbox = QVBoxLayout()
 
-		# buttons
-		for label, data in [
-			("hashrate", "h"),
-			("results", "r"),
-			("connection", "c")
-		]:
+		self.button_hbox = None
+
+		self.vbox = QVBoxLayout()
+		self.vbox.addWidget(self.log_win)
+
+		self.resize(1000, 800)
+		self.setWindowTitle("Smith")
+		self.setLayout(self.vbox)
+		self.show()
+
+
+	def remove_buttons(self):
+		if self.button_hbox:
+			self.vbox.removeItem(self.button_hbox)
+			self.button_hbox = None
+
+
+	def add_buttons(self, button_desc):
+		self.remove_buttons()
+		self.button_hbox = QHBoxLayout()
+		for label, data in button_desc:
 			b = QPushButton(label)
 			def on_clicked_factory(label, data):
 				def on_clicked():
@@ -102,20 +117,14 @@ class MainWin(QWidget):
 				return on_clicked
 			b.clicked.connect(on_clicked_factory(label, data))
 			self.button_hbox.addWidget(b)
-
 		self.button_hbox.addStretch(1)
+		self.vbox.addLayout(self.button_hbox)
 
-		vbox.addWidget(self.log_win)
-		vbox.addLayout(self.button_hbox)
-
-		self.resize(1000, 800)
-		self.setWindowTitle("Smith")
-		self.setLayout(vbox)
-		self.show()
 
 	def closeEvent(self, event):
 		event.ignore()
 		app.close()
+
 
 class App:
 	def __init__(self, loop):
@@ -344,14 +353,11 @@ class App:
 
 		algo_config = self.config["algos"][self.algo]
 		args = algo_config["cmd"].split(" ", 1)
-		cmd = args.pop(0)
-		args = args[0] if args else ""
 
 		self.log("starting miner process...")
 		try:
 			self.proc = await asyncio.create_subprocess_exec(
-				cmd,
-				args,
+				*args,
 				cwd=algo_config["cwd"],
 				stdin=asyncio.subprocess.PIPE,
 				stdout=asyncio.subprocess.PIPE)
@@ -364,6 +370,7 @@ class App:
 
 		self.log("miner process running.")
 		self.miner_state = "on"
+		self.main_win.add_buttons(algo_config["buttons"])
 		while True:
 			line = await self.proc.stdout.readline()
 			if not line: break
@@ -381,6 +388,7 @@ class App:
 			self.server = None
 		self.miner_state = "off"
 		self.proc = None
+		self.main_win.remove_buttons()
 
 
 	async def stop_miner_coro(self):
