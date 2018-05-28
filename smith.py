@@ -5,14 +5,19 @@ import html
 import sys
 import json
 import os
-
+import time
 from PyQt5.QtWidgets import *
 import PyQt5.QtGui as QtGui
 from quamash import QEventLoop
-
 if sys.platform == "win32":
 	import colorama
 	colorama.init()
+
+
+LOG_FILE_NAME = "log.txt"
+WINDOW_WIDTH = 1000
+WINDOW_HEIGHT = 800
+FONT_SIZE = 10
 
 
 def to_json(o):
@@ -31,11 +36,11 @@ class LogWin(QPlainTextEdit):
 		self.app = app
 		self.setReadOnly(True)
 		self.setUndoRedoEnabled(False)
-#		font = QtGui.QFont("Monospace", 10)
-#		self.setFont(font)
+		font = QtGui.QFont("Monospace", FONT_SIZE)
+		self.setFont(font)
 		self.setLineWrapMode(0)
 		self.setMaximumBlockCount(1000)
-		self.file = open("log.txt", "w")
+		self.file = open(LOG_FILE_NAME, "w")
 
 		bg_color = "#ddd"
 		self.setStyleSheet("background-color:" + bg_color);
@@ -90,7 +95,7 @@ class MainWin(QWidget):
 		self.vbox = QVBoxLayout()
 		self.vbox.addWidget(self.log_win)
 
-		self.resize(1000, 800)
+		self.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
 		self.setWindowTitle("Smith")
 		self.setLayout(self.vbox)
 		self.show()
@@ -128,14 +133,16 @@ class MainWin(QWidget):
 
 class App:
 	def __init__(self, loop):
+		self.exiting = False
 		self.loop = loop
 		self.proc = None
 		self.algo = None
+		self.prev_algo = None
 
 		self.server = None
 		self.miner_writer = None
 		self.miner_state = "off"
-
+		self.miner_exit_time = 0
 
 		# gui and loggin methods
 		self.main_win = MainWin(self)
@@ -152,7 +159,6 @@ class App:
 
 		# pool
 		self.pool_writer = None
-		self.pool_restart_on_disconnect = True
 		self.pool_task = None
 
 		# load config
@@ -187,21 +193,22 @@ class App:
 				"pool-port": int,
 				"login": str,
 				"pass": str,
+				"miner-restart-delay": (int, float),
 				"algos": dict,
 			}
 			for k, t in check.items():
 				assert k in config, "missing key %r" % k
-				assert type(config[k]) == t, "type mismatch"
+				assert isinstance(config[k], t), "type mismatch"
 		except AssertionError as e:
 			self.log_error("invalid config structure: %s." % e)
 			return
 		try:
 			for k, v in config["algos"].items():
-				assert type(k) == str
-				assert type(v) == dict
+				assert isinstance(k, str)
+				assert isinstance(v, dict)
 				for k in ["cmd", "cwd"]:
 					assert k in v
-					assert type(v[k]) == str
+					assert isinstance(v[k], str)
 		except AssertionError as e:
 			self.log_error("invalid config structure.")
 			return
@@ -220,17 +227,24 @@ class App:
 
 	def close(self):
 		async def terminate_coro():
-			self.pool_restart_on_disconnect = False
-			if self.pool_writer: self.pool_writer.close()
-			if self.pool_task: await self.pool_task
-			await self.stop_miner_coro()
-			self.loop.stop()
+			try:
+				self.exiting = True
+				#self.log("1")
+				if self.pool_writer: self.pool_writer.close()
+				#self.log("2")
+				if self.pool_task: await self.pool_task
+				#self.log("3")
+				await self.stop_miner_coro()
+				#self.log("4")
+				self.loop.stop()
+			except Exception as e:
+				self.log_error("terminate_coro: %r." % e)
+				self.loop.stop()
 		self.log("exiting...")
 		self.loop.create_task(terminate_coro())
 
 
 	async def pool_coro(self):
-
 		pool_addr = self.config["pool-addr"]
 		pool_port = self.config["pool-port"]
 
@@ -243,6 +257,10 @@ class App:
 
 		self.log("connected to pool.")
 		self.pool_writer = writer
+
+		if self.exiting:
+			# close writer so this whole task will be done fast and we can exit.
+			self.pool_writer.close()
 
 		if self.algo == None:
 			self.log("sending fake login to pool:")
@@ -281,8 +299,9 @@ class App:
 				del o["params"]["algo"]
 
 			if algo and algo != self.algo:
-				self.log("algorithm has changed from %s to %s." % (self.algo, algo))
+				self.prev_algo = self.algo
 				self.algo = algo
+				self.log("algorithm has changed from %s to %s." % (self.prev_algo, self.algo))
 				if self.algo not in self.config["algos"]:
 					self.log("algorithm is not supported.")
 					await self.stop_miner_coro()
@@ -300,7 +319,7 @@ class App:
 		writer.close()
 
 		# restart
-		if self.pool_restart_on_disconnect:
+		if not self.exiting:
 			await self.stop_miner_coro()
 			self.pool_task = self.loop.create_task(self.pool_coro())
 
@@ -316,7 +335,7 @@ class App:
 			while True:
 				line = await reader.readline()
 				if not line: break
-				line = line.decode()
+				line = line.decode(errors="ignore")
 				o = from_json(line)
 				self.log("miner says:")
 				self.log(to_pretty_json(o))
@@ -348,8 +367,18 @@ class App:
 
 
 	async def run_miner_coro(self):
+		if self.exiting: return
 		assert self.algo in self.config["algos"]
 		assert self.miner_state == "off"
+
+		# sleep before restart
+		pause = time.time() - self.miner_exit_time
+		delay = max(0, self.config["miner-restart-delay"] - pause)
+		if delay:
+			self.log("sleep before miner restart...")
+			await asyncio.sleep(delay)
+			if self.exiting: return
+			self.log("sleeping done.")
 
 		algo_config = self.config["algos"][self.algo]
 		args = algo_config["cmd"].split(" ", 1)
@@ -388,6 +417,7 @@ class App:
 			self.server = None
 		self.miner_state = "off"
 		self.proc = None
+		self.miner_exit_time = time.time()
 		self.main_win.remove_buttons()
 
 
