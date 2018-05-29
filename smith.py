@@ -6,6 +6,7 @@ import sys
 import json
 import os
 import time
+import traceback
 from PyQt5.QtWidgets import *
 import PyQt5.QtGui as QtGui
 from quamash import QEventLoop
@@ -42,26 +43,27 @@ class LogWin(QPlainTextEdit):
 		self.setMaximumBlockCount(1000)
 		self.file = open(LOG_FILE_NAME, "w")
 
-		bg_color = "#ddd"
-		self.setStyleSheet("background-color:" + bg_color);
-		self.normal_format = QtGui.QTextBlockFormat()
-		self.normal_format.setBackground(QtGui.QColor(bg_color))
-
-		self.error_format = QtGui.QTextBlockFormat()
-		self.error_format.setBackground(QtGui.QColor("#faa"))
-
-		self.miner_format = QtGui.QTextBlockFormat()
-		self.miner_format.setBackground(QtGui.QColor("#ffc"))
+#		bg_color = "#ddd"
+#		self.setStyleSheet("background-color:" + bg_color);
+#		self.normal_format = QtGui.QTextBlockFormat()
+#		self.normal_format.setBackground(QtGui.QColor(bg_color))
+#		self.error_format = QtGui.QTextBlockFormat()
+#		self.error_format.setBackground(QtGui.QColor("#faa"))
+#		self.miner_format = QtGui.QTextBlockFormat()
+#		self.miner_format.setBackground(QtGui.QColor("#ffc"))
+#		self.debug_format = QtGui.QTextBlockFormat()
+#		self.debug_format.setBackground(QtGui.QColor("#aaf"))
 
 
 	def miner_log(self, text):
 		for line in text.rstrip().split("\n"):
-			self.appendHtml("<pre style='color:#333'>%s</pre>" % html.escape(line))
+#			self.appendHtml("<pre style='color:#333'>%s</pre>" % html.escape(line))
+			self.appendHtml("<pre style='color:#880'>%s</pre>" % html.escape(line))
 			self.file.write("[miner]%s\n" % line)
 			print("\033[33m[miner]\033[m" + line)
 		self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
-		cursor = self.textCursor()
-		cursor.setBlockFormat(self.miner_format)
+#		cursor = self.textCursor()
+#		cursor.setBlockFormat(self.miner_format)
 
 
 	def log(self, text):
@@ -70,18 +72,28 @@ class LogWin(QPlainTextEdit):
 			self.file.write(line + "\n")
 			print(line)
 		self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
-		cursor = self.textCursor()
-		cursor.setBlockFormat(self.normal_format)
+#		cursor = self.textCursor()
+#		cursor.setBlockFormat(self.normal_format)
 
 
 	def log_error(self, text):
 		for line in text.rstrip().split("\n"):
-			self.appendHtml("<pre>error: %s</pre>" % html.escape(line))
+			self.appendHtml("<pre style='color:#f00'>error: %s</pre>" % html.escape(line))
 			self.file.write("error: %s\n" % line)
 			print("\033[31merror:\033[m "+ line)
 		self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
-		cursor = self.textCursor()
-		cursor.setBlockFormat(self.error_format)
+#		cursor = self.textCursor()
+#		cursor.setBlockFormat(self.error_format)
+
+	def log_debug(self, text):
+		for line in text.rstrip().split("\n"):
+			self.appendHtml("<pre style='color:#00f'>debug: %s</pre>" % html.escape(line))
+			self.file.write("debug: %s\n" % line)
+			print("\033[34mdebug:\033[m "+ line)
+		self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
+#		cursor = self.textCursor()
+#		cursor.setBlockFormat(self.debug_format)
+
 
 
 class MainWin(QWidget):
@@ -136,6 +148,18 @@ class MainWin(QWidget):
 
 
 class App:
+	# helper method for thread creation
+	# catches exceptions and logs trace
+	def create_task(self, coro):
+		def done_callback(future):
+			try: future.result()
+			except:
+				self.log_debug(traceback.format_exc())
+		task = self.loop.create_task(coro)
+		task.add_done_callback(done_callback)
+		return task
+
+
 	def __init__(self, loop):
 		self.exiting = False
 		self.loop = loop
@@ -150,9 +174,10 @@ class App:
 
 		# gui and loggin methods
 		self.main_win = MainWin(self)
+		self.log       = self.main_win.log_win.log
 		self.miner_log = self.main_win.log_win.miner_log
-		self.log = self.main_win.log_win.log
 		self.log_error = self.main_win.log_win.log_error
+		self.log_debug = self.main_win.log_win.log_debug
 
 		# signal
 		if sys.platform == "linux2":
@@ -169,7 +194,16 @@ class App:
 		self.load_config()
 		if not self.config: return
 
-		self.pool_task = self.loop.create_task(self.pool_coro())
+		self.pool_task = self.create_task(self.pool_coro())
+
+		# nice for debugging
+#		async def input_coro():
+#			while True:
+#				line = await loop.run_in_executor(None, sys.stdin.readline)
+#				line = line.strip()
+#				if line == "k":
+#					self.proc.kill()
+#		self.input_task = self.create_task(input_coro())
 
 
 	def load_config(self):
@@ -222,7 +256,11 @@ class App:
 
 
 	def run(self):
-		with self.loop: self.loop.run_forever()
+		try:
+			self.loop.run_forever()
+			self.loop.close()
+		except:
+			self.log_debug(traceback.format_exc())
 
 		# close log file
 		self.log("bye.")
@@ -233,19 +271,15 @@ class App:
 		async def terminate_coro():
 			try:
 				self.exiting = True
-				#self.log("1")
 				if self.pool_writer: self.pool_writer.close()
-				#self.log("2")
 				if self.pool_task: await self.pool_task
-				#self.log("3")
 				await self.stop_miner_coro()
-				#self.log("4")
 				self.loop.stop()
-			except Exception as e:
-				self.log_error("terminate_coro: %r." % e)
+			except:
+				self.log_debug(traceback.format_exc())
 				self.loop.stop()
 		self.log("exiting...")
-		self.loop.create_task(terminate_coro())
+		self.create_task(terminate_coro())
 
 
 	async def pool_coro(self):
@@ -281,9 +315,10 @@ class App:
 			writer.write((to_json(login) + "\n").encode())
 		else:
 			# start server and run miner
-			assert self.proc   == None
+			assert self.proc == None
+			assert self.miner_writer == None
 			assert self.server == None
-			self.server_task = self.loop.create_task(self.run_server_coro())
+			self.server_task = self.create_task(self.run_server_coro())
 
 		while True:
 			line = await reader.readline()
@@ -325,8 +360,7 @@ class App:
 		# restart
 		if not self.exiting:
 			await self.stop_miner_coro()
-			self.pool_task = self.loop.create_task(self.pool_coro())
-
+			self.pool_task = self.create_task(self.pool_coro())
 
 
 	async def run_server_coro(self):
@@ -344,7 +378,7 @@ class App:
 				self.log("miner says:")
 				self.log(to_pretty_json(o))
 
-				# find algorithm
+				# fix login and pass
 				if o.get("method") == "login":
 					o["params"]["login"] = self.config["login"]
 					o["params"]["pass"] = self.config["pass"]
@@ -352,7 +386,7 @@ class App:
 				# pass data to pool
 				self.pool_writer.write((to_json(o) + "\n").encode())
 
-			if self.miner_state == "stopping":
+			if self.miner_state in ("stopping", "off") :
 				self.log("miner disconnected.")
 			else:
 				self.log_error("miner disconnected unexpectedly.")
@@ -364,10 +398,13 @@ class App:
 		self.log("listening for miner to connect %s..." % str((local_addr, local_port)))
 		self.server = await asyncio.start_server(on_connected, local_addr, local_port, backlog=1)
 
-		self.miner_task = self.loop.create_task(self.run_miner_coro())
+		self.miner_task = self.create_task(self.run_miner_coro())
 
-		await self.server.wait_closed()
-		self.server = None
+		try:
+			await self.server.wait_closed()
+			self.server = None
+		except:
+			self.log_debug(traceback.format_exc())
 
 
 	async def run_miner_coro(self):
@@ -400,8 +437,8 @@ class App:
 				self.server.close()
 				self.server = None
 			return
-		except Exception as e:
-			self.log_error("%s." % e)
+		except:
+			self.log_debug(traceback.format_exc())
 			return
 
 		self.log("miner process running.")
@@ -412,6 +449,7 @@ class App:
 			if not line: break
 			line = line.decode()
 			self.miner_log(line.rstrip())
+
 		await self.proc.wait()
 		if self.miner_state == "stopping":
 			self.log("miner process stopped (%d)." % self.proc.returncode)
@@ -419,13 +457,19 @@ class App:
 			self.log_error("miner process stopped unexpectedly (%d)." % self.proc.returncode)
 			# close pool to toggle restart
 			self.pool_writer.close()
-		if self.server:
-			self.server.close()
-			self.server = None
 		self.miner_state = "off"
 		self.proc = None
 		self.miner_exit_time = time.time()
 		self.main_win.remove_buttons()
+
+		# close connection and server
+		if self.server:
+			self.server.close()
+			self.server = None
+		if self.miner_writer:
+			self.miner_writer.close()
+			self.miner_writer = None
+		await self.server_task
 
 
 	async def stop_miner_coro(self):
@@ -439,9 +483,7 @@ class App:
 			#self.proc.send_signal(signal.SIGINT)
 			#self.miner_writer.write("q".encode())
 			self.proc.kill()
-
 			await self.miner_task
-			await self.server_task
 
 
 if __name__ == "__main__":
