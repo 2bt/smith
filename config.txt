@@ -9,17 +9,23 @@
 
 		# windows
 
-		"heavy": {
-#			"cmd": "cast_xmr-vega.exe --algo=2 --nonicehash --reconnects 3 --fastjobswitch --remoteaccess --opencl 1 -G 0,1,2,3,4,5,6,7 -S trill.sebgreen.net:14349 -u rig -p m2",
-#			"cwd": ".",
-			"cmd": "xmr-stak-win64\\xmr-stak.exe",
-			"cwd": "xmr-stak-win64",
-			"buttons": [ ["hashrate", "h"], ["results", "r"], ["connection", "c"] ]
-		},
+#		"monero_v7": {
+#			"cmd": "xmrig-2.6.2-gcc-win64\\xmrig.exe",
+#			"cwd": "xmrig-2.6.2-gcc-win64",
+#			"buttons": [ ["hashrate", "h"], ["pause", "p"], ["resume", "r"] ]
+#		},
+#		"heavy": {
+#			"cmd": "xmr-stak-win64\\xmr-stak.exe",
+#			"cwd": "xmr-stak-win64",
+#			"buttons": [ ["hashrate", "h"], ["results", "r"], ["connection", "c"] ]
+#		},
 		"monero_v7": {
-			"cmd": "xmrig-2.6.2-gcc-win64\\xmrig.exe",
-			"cwd": "xmrig-2.6.2-gcc-win64",
-			"buttons": [ ["hashrate", "h"], ["pause", "p"], ["resume", "r"] ]
+			"cmd": "cast_xmr\\cast_xmr-vega.exe --algo=1 --nonicehash --reconnects 1 --fastjobswitch --opencl 1 -G 0 -S localhost:55555 -u x -p x",
+			"cwd": ".",
+		},
+		"heavy": {
+			"cmd": "cast_xmr\\cast_xmr-vega.exe --algo=2 --nonicehash --reconnects 1 --fastjobswitch --opencl 1 -G 0 -S localhost:55555 -u x -p x",
+			"cwd": ".",
 		},
 
 #		# linux

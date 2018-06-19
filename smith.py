@@ -270,7 +270,6 @@ class App:
 	def close(self):
 		async def terminate_coro():
 			try:
-				self.exiting = True
 				if self.pool_writer: self.pool_writer.close()
 				if self.pool_task: await self.pool_task
 				await self.stop_miner_coro()
@@ -278,7 +277,14 @@ class App:
 			except:
 				self.log_debug(traceback.format_exc())
 				self.loop.stop()
+		if self.exiting:
+			a = QMessageBox.question(self.main_win, "Message", "Force exit?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+			if a == QMessageBox.Yes:
+				if self.proc: self.proc.kill()
+				self.loop.stop()
+			return
 		self.log("exiting...")
+		self.exiting = True
 		self.create_task(terminate_coro())
 
 
@@ -323,7 +329,7 @@ class App:
 		while True:
 			line = await reader.readline()
 			if not line: break
-			line = line.decode()
+			line = line.decode(errors="ignore")
 			o = from_json(line)
 			self.log("pool says:")
 			self.log(to_pretty_json(o))
@@ -443,11 +449,11 @@ class App:
 
 		self.log("miner process running.")
 		self.miner_state = "on"
-		self.main_win.add_buttons(algo_config["buttons"])
+		self.main_win.add_buttons(algo_config.get("buttons", []))
 		while True:
 			line = await self.proc.stdout.readline()
 			if not line: break
-			line = line.decode()
+			line = line.decode(errors="ignore")
 			self.miner_log(line.rstrip())
 
 		await self.proc.wait()
@@ -482,7 +488,13 @@ class App:
 
 			#self.proc.send_signal(signal.SIGINT)
 			#self.miner_writer.write("q".encode())
-			self.proc.kill()
+
+			# process shuts itself done nicely on disconnect
+			if self.miner_writer:
+				self.miner_writer.close()
+			else:
+				self.proc.kill()
+
 			await self.miner_task
 
 
