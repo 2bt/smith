@@ -432,11 +432,14 @@ class App:
 
 		self.log("starting miner process...")
 		try:
+			DETACHED_PROCESS = 0x00000008
 			self.proc = await asyncio.create_subprocess_exec(
 				*args,
 				cwd=algo_config["cwd"],
 				stdin=asyncio.subprocess.PIPE,
-				stdout=asyncio.subprocess.PIPE)
+				stdout=asyncio.subprocess.PIPE,
+				stderr=asyncio.subprocess.PIPE,
+				creationflags=DETACHED_PROCESS)
 		except FileNotFoundError as e:
 			self.log_error("cannot start miner process: %s." % e.strerror)
 			if self.server:
